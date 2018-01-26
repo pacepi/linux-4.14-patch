@@ -1,0 +1,88 @@
+diff --git a/kernel/panic.c b/kernel/panic.c
+index bdd18af..8504b76 100644
+--- a/kernel/panic.c
++++ b/kernel/panic.c
+@@ -121,6 +121,75 @@ void nmi_panic(struct pt_regs *regs, const char *msg)
+ }
+ EXPORT_SYMBOL(nmi_panic);
+ 
++#ifdef CONFIG_PRINTK
++#include <linux/uaccess.h>
++#include <linux/fs.h>
++
++void dump_kmsg_to_file(void)
++{
++	struct file *fkmsg = NULL;
++	struct file *fdump = NULL;
++	int open_fflag = O_CREAT | O_RDWR | O_NOFOLLOW | O_SYNC;
++	char *buf = NULL;
++	size_t size = PAGE_SIZE;
++	size_t ret = 0;
++
++	pr_emerg("trigger dump kmsg from panic\n");
++	fkmsg = filp_open("/dev/kmsg", O_RDONLY | O_NONBLOCK, 0600);
++	if (fkmsg == NULL) {
++		pr_emerg("open /dev/ksmg fail\n");
++		goto out;
++	}
++
++	//(void) sys_unlink((const char __user *)"/var/KDUMPMSG");
++	fdump = filp_open("/var/KDUMPMSG", open_fflag, 0600);
++	if (fdump == NULL) {
++		pr_emerg("open /dev/ksmg fail\n");
++		goto close_fkmsg;
++	}
++
++	buf = vmalloc(size);
++	if (buf == NULL) {
++		pr_emerg("vmalloc fail\n");
++		goto close_fdump;
++	}
++
++	pr_emerg("start dump kmsg ...\n");
++	fkmsg->f_pos = 0;
++	fdump->f_pos = 0;
++	while ((ret = kernel_read(fkmsg, buf, size, &fkmsg->f_pos)) > 0) {
++		int n = 0;
++
++		while (ret > 0) {
++			n = kernel_write(fdump, buf, ret, &fdump->f_pos);
++			if (n <= 0) {
++				pr_emerg("write log fail\n");
++				goto free_buf;
++			}
++			ret -= n;
++		}
++	}
++	pr_emerg("finish dump kmsg ...\n");
++
++free_buf:
++	if (buf)
++		kvfree(buf);
++
++close_fdump:
++	if (fdump)
++		filp_close(fdump, NULL);
++
++close_fkmsg:
++	if (fkmsg)
++		filp_close(fkmsg, NULL);
++
++out:
++	return;
++}
++#else
++void dump_kmsg_to_file(void) {}
++#endif    /*#ifdef CONFIG_PRINTK*/
++
+ /**
+  *	panic - halt the system
+  *	@fmt: The text string to print
+@@ -173,6 +242,7 @@ void panic(const char *fmt, ...)
+ 	vsnprintf(buf, sizeof(buf), fmt, args);
+ 	va_end(args);
+ 	pr_emerg("Kernel panic - not syncing: %s\n", buf);
++	dump_kmsg_to_file();
+ #ifdef CONFIG_DEBUG_BUGVERBOSE
+ 	/*
+ 	 * Avoid nested stack-dumping if a panic occurs during oops processing
